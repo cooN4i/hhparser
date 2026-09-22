@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  hhparser:
+    build: .
+    container_name: hhparser_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
