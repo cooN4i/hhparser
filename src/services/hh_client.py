@@ -1,4 +1,6 @@
 import asyncio
+from datetime import datetime, timezone
+import json
 import logging
 import re
 from typing import Any, Dict, List, Optional, Set
@@ -14,11 +16,7 @@ class HHClient:
     BASE_VACANCY_URL = "https://spb.hh.ru/vacancy"
 
     DEFAULT_HEADERS = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/128.0.0.0 Safari/537.36"
-        ),
+        "User-Agent": settings.HH_USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
         "Upgrade-Insecure-Requests": "1"
@@ -34,9 +32,7 @@ class HHClient:
         area: Optional[int] = None,
         schedule: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """
-        Fetches vacancy cards from a single search page.
-        """
+        """Fetches vacancy cards from a search page."""
         params = [
             ("text", text),
             ("order_by", "publication_time"),
@@ -77,15 +73,12 @@ class HHClient:
                 vac_id = id_match.group(1)
                 title = title_el.get_text(strip=True)
 
-                # Company
                 emp_el = card.find(attrs={"data-qa": re.compile(r"vacancy-serp__vacancy-employer")})
                 company = emp_el.get_text(strip=True) if emp_el else "Не указана"
 
-                # Card salary / compensation
                 sal_el = card.find(attrs={"data-qa": re.compile(r"compensation|salary")})
                 card_salary = sal_el.get_text(" ", strip=True) if sal_el else None
 
-                # Address
                 addr_el = card.find(attrs={"data-qa": re.compile(r"vacancy-serp__vacancy-address")})
                 card_address = addr_el.get_text(" ", strip=True) if addr_el else ""
 
@@ -105,8 +98,8 @@ class HHClient:
 
     async def fetch_vacancy_details(self, client: httpx.AsyncClient, vac_id: str) -> Dict[str, Any]:
         """
-        Fetches complete details for a single vacancy page:
-        description, key skills tags, exact salary, schedule/format.
+        Fetches detailed info for a single vacancy:
+        extracts clean data from HH-Lux-InitialState template (or falls back to HTML).
         """
         url = f"{self.BASE_VACANCY_URL}/{vac_id}"
         try:
@@ -117,42 +110,83 @@ class HHClient:
 
             soup = BeautifulSoup(response.text, "lxml")
 
-            # Title
+            # Try to read clean JSON state
+            tmpl = soup.find("template", id="HH-Lux-InitialState")
+            if tmpl:
+                try:
+                    data = json.loads(tmpl.string or tmpl.text)
+                    v = data.get("vacancyView", {}).get("vacancyFull", {}).get("vacancy", {})
+                    if v:
+                        pub_iso = v.get("publicationTimeIso")
+                        pub_dt = None
+                        if pub_iso:
+                            try:
+                                pub_dt = datetime.fromisoformat(pub_iso)
+                            except Exception:
+                                pass
+
+                        # Extract salary string
+                        sal_raw = None
+                        comp = v.get("compensation")
+                        if comp:
+                            sal_from = comp.get("from")
+                            sal_to = comp.get("to")
+                            cur = comp.get("currencyCode", "RUR")
+                            gross = comp.get("gross", False)
+                            tax_text = " (до вычета)" if gross else " (на руки)"
+                            sym = {"RUR": "₽", "RUB": "₽", "USD": "$", "EUR": "€"}.get(cur, cur)
+                            if sal_from and sal_to:
+                                sal_raw = f"{sal_from:,} – {sal_to:,} {sym}{tax_text}".replace(",", " ")
+                            elif sal_from:
+                                sal_raw = f"от {sal_from:,} {sym}{tax_text}".replace(",", " ")
+                            elif sal_to:
+                                sal_raw = f"до {sal_to:,} {sym}{tax_text}".replace(",", " ")
+
+                        # Work formats
+                        formats = [f.get("name", "") for f in v.get("workFormats", []) if isinstance(f, dict)]
+                        format_str = ", ".join(formats)
+
+                        return {
+                            "title": v.get("name", ""),
+                            "company": v.get("company", {}).get("name", "") if isinstance(v.get("company"), dict) else "",
+                            "salary_raw": sal_raw,
+                            "description_html": v.get("description", ""),
+                            "key_skills": v.get("keySkills", []),
+                            "address": v.get("area", {}).get("name", "") if isinstance(v.get("area"), dict) else "",
+                            "employment_text": format_str,
+                            "published_at": pub_dt
+                        }
+                except Exception as e:
+                    logger.debug(f"JSON state parse error: {e}")
+
+            # Fallback to HTML tags
             title_el = soup.find("h1")
             title = title_el.get_text(strip=True) if title_el else ""
 
-            # Company
             emp_el = soup.find(attrs={"data-qa": re.compile(r"vacancy-company-name")})
             company = emp_el.get_text(strip=True) if emp_el else ""
 
-            # Salary
             sal_el = soup.find(attrs={"data-qa": re.compile(r"vacancy-salary")})
             salary_raw = sal_el.get_text(" ", strip=True) if sal_el else None
 
-            # Description
             desc_el = soup.find(attrs={"data-qa": "vacancy-description"})
-            description = desc_el.get_text("\n", strip=True) if desc_el else ""
+            description_html = str(desc_el) if desc_el else ""
 
-            # Skills
             skills_elems = soup.find_all(attrs={"data-qa": re.compile(r"skills-element|bloko-tag")})
             key_skills = [s.get_text(strip=True) for s in skills_elems if s.get_text(strip=True)]
 
-            # Location / Address / Metro
             addr_el = soup.find(attrs={"data-qa": re.compile(r"vacancy-view-raw-address|vacancy-address")})
             address = addr_el.get_text(" ", strip=True) if addr_el else ""
-
-            # Employment / Schedule text
-            emp_mode_el = soup.find(attrs={"data-qa": re.compile(r"common-employment-text|work-schedule")})
-            employment_text = emp_mode_el.get_text(" ", strip=True) if emp_mode_el else ""
 
             return {
                 "title": title,
                 "company": company,
                 "salary_raw": salary_raw,
-                "description": description,
+                "description_html": description_html,
                 "key_skills": key_skills,
                 "address": address,
-                "employment_text": employment_text
+                "employment_text": "",
+                "published_at": None
             }
         except Exception as e:
             logger.error(f"Error fetching vacancy details for {vac_id}: {e}")
@@ -160,8 +194,8 @@ class HHClient:
 
     async def get_all_target_vacancies(self, existing_ids: Optional[Set[str]] = None) -> List[Dict[str, Any]]:
         """
-        Fetches search results for both SPb and Remote.
-        For newly discovered vacancies, fetches full details.
+        Fetches search results strictly focused on Python backend / developer.
+        Excludes generic sysadmins and telecom jobs.
         """
         if existing_ids is None:
             existing_ids = set()
@@ -171,11 +205,12 @@ class HHClient:
             {"text": "python backend", "area": 2},
             {"text": "python разработчик", "area": 2},
             {"text": "fastapi OR sqlalchemy", "area": 2},
-            {"text": "junior devops python OR сисадмин python", "area": 2},
+            {"text": "стажер python OR стажер backend", "area": 2},
             # Remote across Russia
             {"text": "python backend", "schedule": "remote"},
             {"text": "python разработчик", "schedule": "remote"},
             {"text": "fastapi OR sqlalchemy", "schedule": "remote"},
+            {"text": "стажер python", "schedule": "remote"},
         ]
 
         raw_cards_by_id: Dict[str, Dict[str, Any]] = {}
@@ -190,10 +225,9 @@ class HHClient:
                 )
                 for c in cards:
                     raw_cards_by_id[c["id"]] = c
-                # Small delay between search requests to be polite
                 await asyncio.sleep(0.3)
 
-            # Filter out already seen IDs before fetching full details
+            # Filter out already known IDs
             candidate_cards = [
                 c for c in raw_cards_by_id.values()
                 if c["id"] not in existing_ids
@@ -201,11 +235,13 @@ class HHClient:
 
             logger.info(f"Найдено {len(raw_cards_by_id)} карточек на поиске, новых кандидатов для детального анализа: {len(candidate_cards)}")
 
-            # Fetch details for candidate vacancies (limit to max 30 per check to prevent timeouts)
+            # Fetch details for candidate vacancies
             detailed_vacancies = []
-            for card in candidate_cards[:30]:
+            for card in candidate_cards[:35]:
                 details = await self.fetch_vacancy_details(client, card["id"])
-                # Merge card info with detail info
+                if not details:
+                    continue
+
                 merged = {
                     "id": card["id"],
                     "url": card["url"],
@@ -214,8 +250,9 @@ class HHClient:
                     "salary_raw": details.get("salary_raw") or card["card_salary"],
                     "address": details.get("address") or card["card_address"],
                     "employment_text": details.get("employment_text", ""),
-                    "description": details.get("description", ""),
-                    "key_skills": details.get("key_skills", [])
+                    "description_html": details.get("description_html", ""),
+                    "key_skills": details.get("key_skills", []),
+                    "published_at": details.get("published_at")
                 }
                 detailed_vacancies.append(merged)
                 await asyncio.sleep(0.3)

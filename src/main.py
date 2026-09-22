@@ -103,9 +103,18 @@ class JobMonitor:
                 logger.info("Подходящих вакансий по фильтрам не найдено.")
                 return 0
 
-            # Сортируем строго от самых свежих к более старым (по ID вакансии на HH)
+            # Helper to get publication timestamp for sorting
+            def get_sort_key(vac):
+                dt = vac.get("published_at")
+                if isinstance(dt, datetime):
+                    if dt.tzinfo is not None:
+                        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+                    return dt
+                return datetime.min
+
+            # Сортируем строго от самых свежих к более старым (по реальной дате публикации на HH)
             passed_vacancies.sort(
-                key=lambda x: int(x["id"]),
+                key=get_sort_key,
                 reverse=True
             )
 

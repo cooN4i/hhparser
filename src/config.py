@@ -17,9 +17,10 @@ class Settings(BaseSettings):
     CHECK_INTERVAL_SECONDS: int = 300
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/vacancies.db"
     MIN_SALARY_RUB: int = 50000
-    HH_USER_AGENT: str = "HH-Student-JobHunter/1.0 (contact: bagir-spb@t.me)"
+    MAX_VACANCY_AGE_DAYS: int = 7  # Maximum age in days (covers weekend postings)
+    HH_USER_AGENT: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
-    # Target stack for scoring and matching
+    # User stack
     MY_STACK: List[str] = [
         "python",
         "fastapi",
@@ -29,41 +30,27 @@ class Settings(BaseSettings):
         "git",
         "ci/cd",
         "postgresql",
-        "postgres",
         "asyncio",
         "linux",
         "rest api",
-        "backend",
-        "бэкенд"
+        "backend"
     ]
 
-    # Stop words / forbidden areas (lowercase)
-    STOP_WORDS: List[str] = [
-        # Data Science / ML / AI
-        "data science",
-        "data scientist",
-        "machine learning",
-        "ml engineer",
-        "ml-инженер",
-        "ml инженер",
-        "ml-разработчик",
-        "ml разработчик",
-        "computer vision",
-        "deep learning",
-        "нейросети",
-        "нейронных сетей",
-        "нейросетей",
-        "nlp",
-        "машинного обучения",
-        "машинному обучению",
-        "data analyst",
-        "аналитик данных",
-        "ai engineer",
-        "ии-инженер",
-        "ai-прототипирование",
-        "вайб-кодер",
-        "ai-assisted",
-        # 1C / Bitrix / PHP / CMS
+    # Stop words for vacancy TITLE (irrelevant roles)
+    TITLE_STOP_WORDS: List[str] = [
+        "системный администратор",
+        "сисадмин",
+        "сетевой инженер",
+        "инженер связи",
+        "инженер тп",
+        "дежурный администратор",
+        "frontend",
+        "фронтенд",
+        "верстальщик",
+        "unreal engine",
+        "unity",
+        "gamedev",
+        "геймдев",
         "1с",
         "1c",
         "битрикс",
@@ -71,24 +58,19 @@ class Settings(BaseSettings):
         "php",
         "wordpress",
         "вордпресс",
-        "crm-интегратор",
-        # Frontend / Mobile
-        "frontend",
-        "фронтенд",
-        "react native",
-        "flutter",
-        "ios developer",
-        "android developer",
-        "swift",
-        # Non-tech roles
+        "data scientist",
+        "data analyst",
+        "аналитик данных",
+        "ml engineer",
+        "ml-инженер",
+        "ml инженер",
         "монтажер",
         "монтажёр",
-        "видеомонтажер",
+        "дизайнер",
+        "рекрутер",
         "hr-менеджер",
         "talent acquisition",
-        "рекрутер",
         "копирайтер",
-        "дизайнер",
         "экономист",
         "бухгалтер",
         "юрист",
@@ -100,6 +82,46 @@ class Settings(BaseSettings):
         "продавец",
         "оператор колл-центра",
         "оператор call-центра"
+    ]
+
+    # Stop words for FULL CONTENT (forbidden technologies / hardware)
+    CONTENT_STOP_WORDS: List[str] = [
+        # Telecom & Network hardware (pure admin/NOC, NOT programming)
+        "cisco",
+        "mikrotik",
+        "d-link",
+        "ospf",
+        "bgp",
+        "телефония",
+        "атс",
+        "коммутатор",
+        "маршрутизатор",
+        "видеонаблюдение",
+        "эникей",
+        "helpdesk",
+        "1-я линия",
+        "первая линия",
+        "монтаж сетей",
+        "монтаж кабельных",
+        "прокладка сетей",
+        "скс",
+        "freebsd",
+        "postfix",
+        "exim",
+        "пайка",
+        "ремонт пк",
+        "сборка пк",
+        # CMS & other languages
+        "битрикс",
+        "bitrix",
+        "1с-программист",
+        "1с программирование",
+        "wordpress",
+        "вордпресс",
+        "joomla",
+        # Mobile frameworks
+        "react native",
+        "flutter"
     ]
 
 

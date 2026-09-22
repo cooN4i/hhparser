@@ -1,21 +1,18 @@
+from datetime import datetime, timezone, timedelta
 import re
 from typing import Any, Dict, List, Optional, Tuple
+from bs4 import BeautifulSoup
 from src.config import settings
 
 
 class FilterService:
     def __init__(self):
         self.min_salary = settings.MIN_SALARY_RUB
-        self.stop_words = settings.STOP_WORDS
+        self.title_stop_words = settings.TITLE_STOP_WORDS
+        self.content_stop_words = settings.CONTENT_STOP_WORDS
 
     def parse_and_check_salary(self, text: Optional[str]) -> Tuple[bool, Optional[int], Optional[int], Optional[str], str]:
-        """
-        Parses salary string and checks against MIN_SALARY_RUB:
-        - If not specified: PASS
-        - If specified in RUB: must not be strictly < MIN_SALARY_RUB
-        - If foreign currency (USD, EUR): PASS
-        Returns (is_passed, sal_from, sal_to, currency, formatted_string)
-        """
+        """Parses salary and checks against MIN_SALARY_RUB."""
         if not text:
             return True, None, None, None, "Не указана (по договорённости)"
 
@@ -46,7 +43,6 @@ class FilterService:
         elif len(nums) == 1:
             sal_from = nums[0]
 
-        # Check threshold
         if curr == "RUB":
             if sal_to and sal_to < self.min_salary:
                 return False, sal_from, sal_to, curr, clean
@@ -55,170 +51,233 @@ class FilterService:
 
         return True, sal_from, sal_to, curr, clean
 
-    def check_location(self, address: str, employment_text: str, description: str) -> Tuple[bool, str]:
-        """
-        Checks location:
-        - Either St. Petersburg (any format: office, hybrid, remote)
-        - Or Remote anywhere
-        Rejects office in other cities (Moscow, Novosibirsk, etc.).
-        """
-        combined = f"{address} {employment_text} {description[:200]}".lower()
+    def check_location(self, address: str, employment_text: str, desc_text: str) -> Tuple[bool, str]:
+        """Checks location: St. Petersburg or Remote."""
+        combined = f"{address} {employment_text} {desc_text[:300]}".lower()
 
         is_spb = any(c in combined for c in ["санкт-петербург", "питер", "спб", "петербург"])
         is_remote = any(r in combined for r in ["удален", "дистанцион", "remote"])
 
         if is_spb and is_remote:
-            return True, f"📍 Санкт-Петербург (Удалённо / Гибрид)"
+            return True, "📍 Санкт-Петербург (Удалённо / Гибрид)"
         elif is_spb:
             return True, f"📍 Санкт-Петербург ({address or 'Офис/Гибрид'})"
         elif is_remote:
             loc = address if address else "Вся РФ"
             return True, f"🌐 Удалённая работа ({loc})"
 
-        # If it's an office outside SPb without remote option
         return False, address or "Другой город"
 
-    def check_stop_words(self, title: str, key_skills: List[str], description: str) -> bool:
+    def check_title(self, title: str) -> bool:
         """
-        Returns False if any stop word is present or if the title is non-technical.
+        Validates vacancy title:
+        - Must NOT contain forbidden title keywords (sysadmin, frontend, 1C, hr, etc.) unless 'python' is in title.
+        - Must be relevant to software engineering / Python / DevOps / Intern.
         """
-        title_lower = title.lower()
-        skills_lower = [s.lower() for s in key_skills]
-        desc_lower = description[:500].lower()
+        lower = title.lower()
 
-        # 1. Title must be related to developer, sysadmin, devops, engineer, QA auto, intern
-        technical_keywords = [
-            "python", "питон", "пайтон", "backend", "бэкенд", "бэкэнд",
-            "разработчик", "developer", "программист", "devops", "девопс",
-            "сисадмин", "системный администратор", "инженер", "engineer",
-            "стажер", "стажёр", "intern", "junior", "qa auto", "автоматизатор",
-            "тестировщик-автоматизатор", "qa-инженер"
-        ]
-        if not any(k in title_lower for k in technical_keywords):
-            return False
-
-        # 2. Strict title check against stop words
-        for stop in self.stop_words:
-            if stop in title_lower:
+        for rej in self.title_stop_words:
+            # If title matches a forbidden role and doesn't explicitly specify Python
+            if rej in lower and "python" not in lower:
                 return False
 
-        # 3. Key skills check
-        critical_skills = [
-            "1с", "1c", "bitrix", "битрикс", "php", "wordpress", "flutter",
-            "react native", "swift", "data science", "machine learning",
-            "computer vision", "nlp", "vue", "react", "angular", "manual qa"
+        allowed_keywords = [
+            "python", "питон", "backend", "бэкенд", "бэкэнд",
+            "fastapi", "django", "flask", "разработчик", "developer",
+            "программист", "devops", "девопс", "стажер", "стажёр",
+            "intern", "qa auto", "автоматизатор"
         ]
-        for skill in skills_lower:
-            for crit in critical_skills:
-                if crit in skill:
-                    return False
+        return any(k in lower for k in allowed_keywords)
 
-        # 4. Check description snippet
-        for stop in ["1с-программист", "битрикс", "data scientist", "машинному обучению", "видеомонтаж"]:
-            if stop in desc_lower:
+    def check_stop_words(self, title: str, key_skills: List[str], desc_html: str) -> bool:
+        """
+        Checks entire vacancy content for forbidden technologies:
+        telecom, Cisco, Mikrotik, OSPF, FreeBSD, Bitrix, 1C, etc.
+        """
+        soup = BeautifulSoup(desc_html, "html.parser")
+        desc_text = soup.get_text(" ", strip=True).lower()
+        full_text = f"{title} {' '.join(key_skills)} {desc_text}".lower()
+
+        for stop in self.content_stop_words:
+            if stop in full_text:
                 return False
 
         return True
 
-    def calculate_stack_match(self, title: str, key_skills: List[str], description: str) -> Tuple[int, List[str]]:
+    def calculate_stack_match(self, title: str, key_skills: List[str], desc_html: str) -> Tuple[int, List[str]]:
         """
-        Calculates match score (%) against user's stack and returns matched technologies.
-        Stack: Python, FastAPI, SQLAlchemy, Pydantic, Git, Docker, CI/CD, PostgreSQL, Asyncio, Linux.
+        Calculates honest stack match (%) based on user's core stack:
+        Python (25%), Web frameworks (20%), ORM/Postgres (15%), Pydantic (15%),
+        Docker (10%), Git (10%), CI/CD (10%), Asyncio (10%), Linux (5%).
         """
-        full_text = f"{title} {' '.join(key_skills)} {description}".lower()
+        soup = BeautifulSoup(desc_html, "html.parser")
+        desc_text = soup.get_text(" ", strip=True).lower()
+        full_text = f"{title} {' '.join(key_skills)} {desc_text}".lower()
 
-        core_techs = [
-            ("Python", [r"\bpython\b", r"\bпайтон\b", r"\bпитон\b"]),
-            ("FastAPI", [r"\bfastapi\b", r"\bfast-api\b"]),
-            ("SQLAlchemy", [r"\bsqlalchemy\b", r"\balchemy\b"]),
-            ("Pydantic", [r"\bpydantic\b"]),
-            ("Docker", [r"\bdocker\b", r"\bконтейнер"]),
-            ("Git", [r"\bgit\b", r"\bгит\b", r"\bgitlab\b", r"\bgithub\b"]),
-            ("CI/CD", [r"\bci/cd\b", r"\bcicd\b"]),
-            ("PostgreSQL", [r"\bpostgres\b", r"\bpostgresql\b", r"\bпостгрес\b", r"\bsql\b"]),
-            ("Asyncio", [r"\basyncio\b", r"\basync\b", r"\bасинхрон"]),
-            ("Linux", [r"\blinux\b", r"\bлинукс\b", r"\bbash\b"]),
-            ("REST API", [r"\brest\b", r"\brest api\b", r"\bapi\b"]),
-            ("Backend", [r"\bbackend\b", r"\bбэкенд\b", r"\bбэкэнд\b"])
-        ]
+        # Python is strictly mandatory
+        has_python = bool(re.search(r"\bpython\b|\bпитон\b|\bпайтон\b", full_text))
+        if not has_python:
+            return 0, []
 
-        matched = []
-        for tech_name, patterns in core_techs:
-            for pattern in patterns:
-                if re.search(pattern, full_text):
-                    matched.append(tech_name)
-                    break
+        matched: List[str] = ["Python"]
+        score = 25
 
-        if "Python" in matched or "Backend" in matched:
-            base_score = 45
-            extra_score = min(55, int((len(matched) / len(core_techs)) * 75))
-            score = base_score + extra_score
-        else:
-            if any(role in title.lower() for role in ["devops", "системный администратор", "сисадмин", "linux"]):
-                score = 50 + min(40, len(matched) * 10)
-            else:
-                score = min(40, len(matched) * 10)
+        # 1. Web Frameworks (FastAPI / Django / Flask / Aiohttp)
+        if re.search(r"\bfastapi\b|\bfast-api\b", full_text):
+            matched.append("FastAPI")
+            score += 20
+        elif re.search(r"\bdjango\b", full_text):
+            matched.append("Django")
+            score += 15
+        elif re.search(r"\bflask\b", full_text):
+            matched.append("Flask")
+            score += 15
+        elif re.search(r"\baiohttp\b", full_text):
+            matched.append("Aiohttp")
+            score += 15
+
+        # 2. ORM & DB (SQLAlchemy, PostgreSQL)
+        if re.search(r"\bsqlalchemy\b|\balchemy\b", full_text):
+            matched.append("SQLAlchemy")
+            score += 15
+        elif re.search(r"\bpostgres\b|\bpostgresql\b|\bпостгрес\b|\bsql\b", full_text):
+            matched.append("PostgreSQL")
+            score += 10
+
+        # 3. Pydantic
+        if re.search(r"\bpydantic\b", full_text):
+            matched.append("Pydantic")
+            score += 15
+
+        # 4. Containers & CI/CD
+        if re.search(r"\bdocker\b|\bконтейнер", full_text):
+            matched.append("Docker")
+            score += 10
+
+        if re.search(r"\bci/cd\b|\bcicd\b", full_text):
+            matched.append("CI/CD")
+            score += 10
+
+        # 5. Git
+        if re.search(r"\bgit\b|\bгит\b|\bgitlab\b|\bgithub\b", full_text):
+            matched.append("Git")
+            score += 10
+
+        # 6. Asyncio
+        if re.search(r"\basyncio\b|\bасинхрон", full_text):
+            matched.append("Asyncio")
+            score += 10
+
+        # 7. Linux & REST API
+        if re.search(r"\blinux\b|\bлинукс\b", full_text):
+            matched.append("Linux")
+            score += 5
+
+        if re.search(r"\brest\b|\brest api\b|\bapi\b", full_text):
+            if "REST API" not in matched:
+                matched.append("REST API")
+                score += 5
+
+        if re.search(r"\bbackend\b|\bбэкенд\b|\bбэкэнд\b", full_text):
+            score += 5
 
         return min(score, 100), matched
 
-    def extract_requirements_snippet(self, description: str) -> str:
-        """Extracts candidate requirements block from description."""
-        lines = description.split("\n")
-        req_lines = []
-        is_capturing = False
+    def extract_requirements(self, desc_html: str) -> str:
+        """
+        Accurately extracts candidate requirements list from HTML description.
+        Finds sections like 'Навыки:', 'Требования:', 'Мы ждем:' and extracts bullet points.
+        """
+        if not desc_html:
+            return ""
 
-        for line in lines:
-            line_str = line.strip()
-            if not line_str:
-                continue
+        soup = BeautifulSoup(desc_html, "html.parser")
 
-            lower_l = line_str.lower()
-            if any(h in lower_l for h in ["требования", "мы ждем", "ждем от вас", "наш идеальный кандидат", "что нужно знать"]):
-                is_capturing = True
-                continue
+        # 1. Look for section headings
+        for p in soup.find_all(["p", "div", "strong", "b"]):
+            t = p.get_text(" ", strip=True).lower()
+            if any(h in t for h in ["навыки:", "требования:", "мы ждем:", "ожидания:", "что для нас важно", "наш идеальный кандидат", "требуемый опыт"]):
+                cur = p
+                for _ in range(5):
+                    nxt = cur.find_next_sibling()
+                    if nxt and nxt.name in ["ul", "ol"]:
+                        lis = [li.get_text(" ", strip=True) for li in nxt.find_all("li")[:5]]
+                        if lis:
+                            return "\n".join(f"• {li.lstrip('•-*— ')}" for li in lis)
+                    elif nxt and nxt.name in ["p", "div"] and len(nxt.get_text(strip=True)) > 15:
+                        return nxt.get_text(" ", strip=True)[:300]
+                    if cur.parent:
+                        cur = cur.parent
+                    else:
+                        break
 
-            if is_capturing:
-                if any(h in lower_l for h in ["обязанности", "условия", "мы предлагаем", "будет плюсом", "задачи"]):
-                    break
-                req_lines.append(line_str)
-                if len(req_lines) >= 4:
-                    break
+        # 2. Fallback: look for the first <ul>
+        first_ul = soup.find("ul")
+        if first_ul:
+            lis = [li.get_text(" ", strip=True) for li in first_ul.find_all("li")[:4]]
+            if lis:
+                return "\n".join(f"• {li.lstrip('•-*— ')}" for li in lis)
 
-        if req_lines:
-            return "\n".join(f"• {l.lstrip('•-* ')}" for l in req_lines)
+        # 3. Fallback: clean text lines
+        lines = [l.strip() for l in soup.get_text("\n", strip=True).split("\n") if len(l.strip()) > 25]
+        return "\n".join(lines[:2]) if lines else ""
 
-        # Fallback: first 2 non-empty lines
-        clean_lines = [l.strip() for l in lines if len(l.strip()) > 20]
-        return "\n".join(clean_lines[:2]) if clean_lines else ""
+    def check_freshness(self, published_at: Optional[datetime]) -> bool:
+        """Checks if vacancy is not older than MAX_VACANCY_AGE_DAYS."""
+        if not published_at:
+            return True
+
+        now = datetime.now(timezone.utc)
+        if published_at.tzinfo is None:
+            pub_aware = published_at.replace(tzinfo=timezone.utc)
+        else:
+            pub_aware = published_at
+
+        cutoff = now - timedelta(days=settings.MAX_VACANCY_AGE_DAYS)
+        return pub_aware >= cutoff
 
     def evaluate_vacancy(self, item: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
         title = item.get("title", "")
         key_skills = item.get("key_skills", [])
-        description = item.get("description", "")
+        desc_html = item.get("description_html", "")
         address = item.get("address", "")
         emp_text = item.get("employment_text", "")
         salary_raw = item.get("salary_raw")
+        published_at = item.get("published_at")
 
-        # 1. Location
-        loc_passed, format_info = self.check_location(address, emp_text, description)
+        # 1. Freshness check: reject stale vacancies older than MAX_VACANCY_AGE_DAYS
+        if not self.check_freshness(published_at):
+            return False, {}
+
+        # 2. Title check: must be developer/backend/python, reject sysadmins/support
+        if not self.check_title(title):
+            return False, {}
+
+        # 3. Strict stop-words check: telecom hardware, Cisco, Mikrotik, Bitrix, 1C, ML, Frontend
+        if not self.check_stop_words(title, key_skills, desc_html):
+            return False, {}
+
+        # 4. Location check: St. Petersburg or Remote
+        soup = BeautifulSoup(desc_html, "html.parser")
+        desc_text = soup.get_text(" ", strip=True)
+        loc_passed, format_info = self.check_location(address, emp_text, desc_text)
         if not loc_passed:
             return False, {}
 
-        # 2. Stop-words
-        if not self.check_stop_words(title, key_skills, description):
-            return False, {}
-
-        # 3. Salary
+        # 5. Salary check: >= 50 000 RUB or unstated
         sal_passed, sal_from, sal_to, currency, sal_formatted = self.parse_and_check_salary(salary_raw)
         if not sal_passed:
             return False, {}
 
-        # 4. Stack match
-        match_score, matched_skills = self.calculate_stack_match(title, key_skills, description)
-        if match_score < 45:
+        # 6. Honest stack match: must be >= 60% (or >= 50% for explicit intern/стажировка)
+        match_score, matched_skills = self.calculate_stack_match(title, key_skills, desc_html)
+        is_intern = any(w in title.lower() for w in ["стажер", "стажёр", "intern", "junior", "младший"])
+        min_threshold = 50 if is_intern else 60
+
+        if match_score < min_threshold:
             return False, {}
 
-        requirements_snippet = self.extract_requirements_snippet(description)
+        requirements_snippet = self.extract_requirements(desc_html)
 
         enriched = {
             "id": str(item.get("id")),
@@ -235,7 +294,7 @@ class FilterService:
             "match_score": match_score,
             "matched_skills": matched_skills,
             "requirements_snippet": requirements_snippet,
-            "published_at": item.get("published_at")
+            "published_at": published_at
         }
 
         return True, enriched

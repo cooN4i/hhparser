@@ -1,13 +1,26 @@
+from datetime import datetime
 import html
 from typing import Any, Dict
 from telebot.async_telebot import AsyncTeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+MONTHS_RU = {
+    1: "января", 2: "февраля", 3: "марта", 4: "апреля",
+    5: "мая", 6: "июня", 7: "июля", 8: "августа",
+    9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
+}
 
 
 class NotificationService:
     def __init__(self, bot: AsyncTeleBot, chat_id: int):
         self.bot = bot
         self.chat_id = chat_id
+
+    def format_pub_date(self, dt: Any) -> str:
+        if isinstance(dt, datetime):
+            m_str = MONTHS_RU.get(dt.month, "")
+            return f"{dt.day} {m_str} в {dt.strftime('%H:%M')}"
+        return ""
 
     def format_vacancy_card(self, vacancy: Dict[str, Any]) -> str:
         title = html.escape(vacancy.get("title", "Без названия"))
@@ -17,6 +30,8 @@ class NotificationService:
         match_score = vacancy.get("match_score", 0)
         matched_skills = vacancy.get("matched_skills", [])
         req = html.escape(vacancy.get("requirements_snippet", "").strip())
+        pub_dt = vacancy.get("published_at")
+        pub_str = self.format_pub_date(pub_dt)
 
         skills_str = ", ".join(matched_skills) if matched_skills else "Python, Backend"
 
@@ -36,8 +51,11 @@ class NotificationService:
             f"🛠 <b>Найденный стек:</b> <i>{html.escape(skills_str)}</i>\n"
         )
 
+        if pub_str:
+            card += f"📅 <b>Опубликовано:</b> {pub_str}\n"
+
         if req:
-            card += f"\n📋 <b>Требования к кандидату:</b>\n{req}\n"
+            card += f"\n📋 <b>Требования / Навыки к кандидату:</b>\n{req}\n"
 
         return card
 
@@ -61,8 +79,7 @@ class NotificationService:
                 disable_web_page_preview=True
             )
             return True
-        except Exception as e:
-            # Fallback text
+        except Exception:
             try:
                 plain_text = (
                     f"🎯 {vacancy.get('title')}\n"
