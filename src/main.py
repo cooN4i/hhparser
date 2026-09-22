@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import sys
 
@@ -53,11 +53,11 @@ class JobMonitor:
             try:
                 pub_datetime = datetime.fromisoformat(pub_at).replace(tzinfo=None)
             except Exception:
-                pub_datetime = datetime.utcnow()
+                pub_datetime = datetime.now(timezone.utc).replace(tzinfo=None)
         elif isinstance(pub_at, datetime):
             pub_datetime = pub_at.replace(tzinfo=None)
         else:
-            pub_datetime = datetime.utcnow()
+            pub_datetime = datetime.now(timezone.utc).replace(tzinfo=None)
 
         skills_str = ", ".join(vac.get("matched_skills", []))
 
@@ -74,7 +74,7 @@ class JobMonitor:
             match_score=vac.get("match_score", 0),
             matched_skills=skills_str,
             published_at=pub_datetime,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc).replace(tzinfo=None)
         )
         session.add(vacancy_record)
 
