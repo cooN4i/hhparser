@@ -15,7 +15,6 @@ class Settings(BaseSettings):
 
     # Parser
     CHECK_INTERVAL_SECONDS: int = 300
-    INITIAL_VACANCIES_LIMIT: int = 15
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/vacancies.db"
     MIN_SALARY_RUB: int = 50000
     HH_USER_AGENT: str = "HH-Student-JobHunter/1.0 (contact: bagir-spb@t.me)"

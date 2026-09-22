@@ -100,36 +100,37 @@ class JobMonitor:
             logger.info(f"Прошло фильтры подходящих вакансий: {len(passed_vacancies)}.")
 
             if not passed_vacancies:
+                logger.info("Подходящих вакансий по фильтрам не найдено.")
                 return 0
 
-            # Sort by match score (highest first)
+            # Сортируем строго от самых свежих к более старым (по ID вакансии на HH)
             passed_vacancies.sort(
-                key=lambda x: x.get("match_score", 0),
+                key=lambda x: int(x["id"]),
                 reverse=True
             )
 
-            to_notify: List[Dict[str, Any]] = []
-            if first_run:
-                # First run: notify top N
-                to_notify = passed_vacancies[:settings.INITIAL_VACANCIES_LIMIT]
-                logger.info(f"Первый запуск: отправка топ-{len(to_notify)} лучших вакансий.")
-            else:
-                to_notify = passed_vacancies
+            # Берём ровно ОДНУ самую последнюю (свежую) вакансию
+            latest_vacancy = passed_vacancies[0]
+            vac_id = str(latest_vacancy["id"])
 
-            sent_count = 0
-            for vac in to_notify:
-                success = await self.notification_service.send_vacancy_notification(vac)
-                if success:
-                    sent_count += 1
-                await asyncio.sleep(0.5)
+            # Проверяем: отправляли ли мы её уже пользователю?
+            if vac_id in existing_ids:
+                logger.info(f"Самая последняя вакансия ID {vac_id} ('{latest_vacancy['title']}') уже была отправлена. Новых вакансий нет.")
+                return 0
 
-            # Save all passed vacancies to DB to avoid duplicate notifications
+            # Если ещё не отправляли — отправляем пользователю ровно эту одну новую вакансию
+            logger.info(f"Найдена новая свежая вакансия ID {vac_id} ('{latest_vacancy['title']}'). Отправляю пользователю...")
+            success = await self.notification_service.send_vacancy_notification(latest_vacancy)
+
+            # Сохраняем в БД: саму отправленную вакансию и остальные найденные более старые,
+            # чтобы при следующих проверках они не считались новыми
             async with async_session_factory() as session:
                 async with session.begin():
                     for vac in passed_vacancies:
                         await self.save_vacancy(session, vac)
 
-            logger.info(f"Успешно отправлено {sent_count} уведомлений и сохранено {len(passed_vacancies)} вакансий в БД.")
+            sent_count = 1 if success else 0
+            logger.info(f"Отправлено уведомление по новой вакансии (ID: {vac_id}). Сохранено в базу: {len(passed_vacancies)}.")
             return sent_count
 
     async def scheduler_loop(self):
