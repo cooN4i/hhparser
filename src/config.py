@@ -36,7 +36,7 @@ class Settings(BaseSettings):
         "backend"
     ]
 
-    # Stop words for vacancy TITLE (irrelevant roles)
+    # Stop words for vacancy TITLE (irrelevant non-engineering roles or pure sysadmins)
     TITLE_STOP_WORDS: List[str] = [
         "системный администратор",
         "сисадмин",
@@ -44,28 +44,16 @@ class Settings(BaseSettings):
         "инженер связи",
         "инженер тп",
         "дежурный администратор",
-        "frontend",
-        "фронтенд",
+        "администратор баз данных",
+        "db administrator",
         "верстальщик",
-        "unreal engine",
-        "unity",
-        "gamedev",
-        "геймдев",
         "1с",
         "1c",
         "битрикс",
         "bitrix",
-        "php",
         "wordpress",
         "вордпресс",
-        "data scientist",
-        "data analyst",
-        "аналитик данных",
-        "ml engineer",
-        "ml-инженер",
-        "ml инженер",
-        "монтажер",
-        "монтажёр",
+        "joomla",
         "дизайнер",
         "рекрутер",
         "hr-менеджер",
@@ -84,18 +72,48 @@ class Settings(BaseSettings):
         "оператор call-центра"
     ]
 
-    # Stop words for FULL CONTENT (forbidden technologies / hardware)
+    # Stop words for FULL CONTENT (forbidden deep specifics: math, transformers, networking, hardware, OS admin)
     CONTENT_STOP_WORDS: List[str] = [
-        # Telecom & Network hardware (pure admin/NOC, NOT programming)
+        # 1. Deep ML / Data Science / Math specifics (Rejected Case 2)
+        "pytorch",
+        "tensorflow",
+        "transformers",
+        "llm",
+        "rag",
+        "huggingface",
+        "cuda",
+        "высшая математика",
+        "высшей математики",
+        "линейная алгебра",
+        "линейной алгебры",
+        "теория вероятностей",
+        "теории вероятностей",
+        "тервер",
+        "матстат",
+        "математическая статистика",
+        "математической статистики",
+        "компьютерное зрение",
+        "computer vision",
+        "deep learning",
+        "глубокое обучение",
+        # 2. Telecom, deep networking & hardware (Rejected Case 4)
+        "модель osi",
+        "маршрутизац",
+        "коммутатор",
+        "маршрутизатор",
+        "bgp",
+        "ospf",
+        "mpls",
+        "vlan",
+        "ip-адресац",
+        "wireshark",
+        "tcpdump",
         "cisco",
         "mikrotik",
         "d-link",
-        "ospf",
-        "bgp",
+        "juniper",
         "телефония",
         "атс",
-        "коммутатор",
-        "маршрутизатор",
         "видеонаблюдение",
         "эникей",
         "helpdesk",
@@ -111,7 +129,21 @@ class Settings(BaseSettings):
         "пайка",
         "ремонт пк",
         "сборка пк",
-        # CMS & other languages
+        "заправка картридж",
+        "плис",
+        "vhdl",
+        "verilog",
+        "systemverilog",
+        "fpga",
+        "схемотехник",
+        # 3. Pure OS-level sysadmin (Rejected Case 4)
+        "systemd без gui",
+        "разбор systemd",
+        "rhel",
+        "alt linux",
+        "astra linux",
+        "ред ос",
+        # 4. Other ecosystems & CMS
         "битрикс",
         "bitrix",
         "1с-программист",
@@ -119,7 +151,7 @@ class Settings(BaseSettings):
         "wordpress",
         "вордпресс",
         "joomla",
-        # Mobile frameworks
+        # 5. Mobile app frameworks
         "react native",
         "flutter"
     ]

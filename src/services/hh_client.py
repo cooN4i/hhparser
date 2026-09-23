@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 import httpx
 from bs4 import BeautifulSoup
 from src.config import settings
@@ -32,7 +32,7 @@ class HHClient:
         area: Optional[int] = None,
         schedule: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Fetches vacancy cards from a search page."""
+        """Fetches vacancy cards from a search page with publication timestamps."""
         params = [
             ("text", text),
             ("order_by", "publication_time"),
@@ -57,9 +57,66 @@ class HHClient:
                 return []
 
             soup = BeautifulSoup(response.text, "lxml")
-            cards = soup.find_all(attrs={"data-qa": "vacancy-serp__vacancy"})
             results = []
 
+            # 1. Primary: Extract rich JSON state from search template
+            tmpl = soup.find("template", id="HH-Lux-InitialState")
+            if tmpl:
+                try:
+                    data = json.loads(tmpl.string or tmpl.text)
+                    items = data.get("vacancySearchResult", {}).get("vacancies", [])
+                    for item in items:
+                        vac_id = str(item.get("vacancyId", ""))
+                        if not vac_id:
+                            continue
+                        name = item.get("name", "")
+                        comp = item.get("compensation") or {}
+                        sal_raw = None
+                        if comp and not comp.get("noCompensation"):
+                            sal_from = comp.get("from")
+                            sal_to = comp.get("to")
+                            cur = comp.get("currencyCode", "RUR")
+                            gross = comp.get("gross", False)
+                            tax_text = " (до вычета)" if gross else " (на руки)"
+                            sym = {"RUR": "₽", "RUB": "₽", "USD": "$", "EUR": "€"}.get(cur, cur)
+                            if sal_from and sal_to:
+                                sal_raw = f"{sal_from:,} – {sal_to:,} {sym}{tax_text}".replace(",", " ")
+                            elif sal_from:
+                                sal_raw = f"от {sal_from:,} {sym}{tax_text}".replace(",", " ")
+                            elif sal_to:
+                                sal_raw = f"до {sal_to:,} {sym}{tax_text}".replace(",", " ")
+
+                        pub = item.get("publicationTime") or {}
+                        pub_iso = pub.get("$") if isinstance(pub, dict) else str(pub) if pub else None
+                        pub_dt = None
+                        if pub_iso:
+                            try:
+                                pub_dt = datetime.fromisoformat(pub_iso)
+                            except Exception:
+                                pass
+
+                        company = item.get("company", {}).get("name", "Не указана") if isinstance(item.get("company"), dict) else "Не указана"
+                        area_name = item.get("area", {}).get("name", "") if isinstance(item.get("area"), dict) else ""
+                        formats = [f.get("name", "") for f in item.get("workFormats", []) if isinstance(f, dict)]
+                        format_str = ", ".join(formats)
+
+                        results.append({
+                            "id": vac_id,
+                            "title": name,
+                            "url": f"https://hh.ru/vacancy/{vac_id}",
+                            "company": company,
+                            "card_salary": sal_raw,
+                            "card_address": area_name,
+                            "employment_text": format_str,
+                            "published_at": pub_dt
+                        })
+                    if results:
+                        return results
+                except Exception as e:
+                    logger.debug(f"JSON state search parse error: {e}")
+
+            # 2. Fallback: Parse HTML cards
+            cards = soup.find_all(attrs={"data-qa": "vacancy-serp__vacancy"})
             for card in cards:
                 title_el = card.find("a", attrs={"data-qa": re.compile(r"serp-item__title")})
                 if not title_el:
@@ -88,7 +145,9 @@ class HHClient:
                     "url": f"https://hh.ru/vacancy/{vac_id}",
                     "company": company,
                     "card_salary": card_salary,
-                    "card_address": card_address
+                    "card_address": card_address,
+                    "employment_text": "",
+                    "published_at": None
                 })
 
             return results
@@ -192,25 +251,27 @@ class HHClient:
             logger.error(f"Error fetching vacancy details for {vac_id}: {e}")
             return {}
 
-    async def get_all_target_vacancies(self, existing_ids: Optional[Set[str]] = None) -> List[Dict[str, Any]]:
+    async def get_all_target_vacancies(
+        self,
+        existing_ids: Optional[Set[str]] = None,
+        max_details: int = 15
+    ) -> Tuple[List[Dict[str, Any]], Set[str]]:
         """
-        Fetches search results strictly focused on Python backend / developer.
-        Excludes generic sysadmins and telecom jobs.
+        Fetches search results for Python positions (SPb & Remote).
+        Returns:
+            detailed_vacancies: List of detailed cards sorted by published_at DESC.
+            all_search_ids: Set of all vacancy IDs seen across all search pages.
         """
         if existing_ids is None:
             existing_ids = set()
 
         search_configs = [
             # SPb (area 2)
-            {"text": "python backend", "area": 2},
-            {"text": "python разработчик", "area": 2},
-            {"text": "fastapi OR sqlalchemy", "area": 2},
-            {"text": "стажер python OR стажер backend", "area": 2},
+            {"text": "python", "area": 2},
+            {"text": "стажер python OR intern python", "area": 2},
             # Remote across Russia
-            {"text": "python backend", "schedule": "remote"},
-            {"text": "python разработчик", "schedule": "remote"},
-            {"text": "fastapi OR sqlalchemy", "schedule": "remote"},
-            {"text": "стажер python", "schedule": "remote"},
+            {"text": "python", "schedule": "remote"},
+            {"text": "стажер python OR intern python", "schedule": "remote"},
         ]
 
         raw_cards_by_id: Dict[str, Dict[str, Any]] = {}
@@ -224,8 +285,12 @@ class HHClient:
                     schedule=conf.get("schedule")
                 )
                 for c in cards:
-                    raw_cards_by_id[c["id"]] = c
+                    cid = c["id"]
+                    if cid not in raw_cards_by_id or (c.get("published_at") and not raw_cards_by_id[cid].get("published_at")):
+                        raw_cards_by_id[cid] = c
                 await asyncio.sleep(0.3)
+
+            all_search_ids = set(raw_cards_by_id.keys())
 
             # Filter out already known IDs
             candidate_cards = [
@@ -233,11 +298,25 @@ class HHClient:
                 if c["id"] not in existing_ids
             ]
 
-            logger.info(f"Найдено {len(raw_cards_by_id)} карточек на поиске, новых кандидатов для детального анализа: {len(candidate_cards)}")
+            def get_pub_key(c):
+                dt = c.get("published_at")
+                if isinstance(dt, datetime):
+                    if dt.tzinfo is not None:
+                        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+                    return dt
+                return datetime.min
 
-            # Fetch details for candidate vacancies
+            # Strictly sort by real publication timestamp DESCENDING (newest first!)
+            candidate_cards.sort(key=get_pub_key, reverse=True)
+
+            logger.info(
+                f"Найдено {len(raw_cards_by_id)} карточек на поиске, "
+                f"новых кандидатов для детального анализа: {len(candidate_cards)}"
+            )
+
+            # Fetch details for candidate vacancies in order of newest first
             detailed_vacancies = []
-            for card in candidate_cards[:35]:
+            for card in candidate_cards[:max_details]:
                 details = await self.fetch_vacancy_details(client, card["id"])
                 if not details:
                     continue
@@ -249,12 +328,12 @@ class HHClient:
                     "company": details.get("company") or card["company"],
                     "salary_raw": details.get("salary_raw") or card["card_salary"],
                     "address": details.get("address") or card["card_address"],
-                    "employment_text": details.get("employment_text", ""),
+                    "employment_text": details.get("employment_text") or card.get("employment_text", ""),
                     "description_html": details.get("description_html", ""),
                     "key_skills": details.get("key_skills", []),
-                    "published_at": details.get("published_at")
+                    "published_at": details.get("published_at") or card.get("published_at")
                 }
                 detailed_vacancies.append(merged)
                 await asyncio.sleep(0.3)
 
-            return detailed_vacancies
+            return detailed_vacancies, all_search_ids

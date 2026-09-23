@@ -71,28 +71,22 @@ class FilterService:
     def check_title(self, title: str) -> bool:
         """
         Validates vacancy title:
-        - Must NOT contain forbidden title keywords (sysadmin, frontend, 1C, hr, etc.) unless 'python' is in title.
-        - Must be relevant to software engineering / Python / DevOps / Intern.
+        - Must NOT contain forbidden title keywords (pure sysadmin, 1C, hr, etc.) unless 'python' is in title.
         """
         lower = title.lower()
 
         for rej in self.title_stop_words:
-            # If title matches a forbidden role and doesn't explicitly specify Python
             if rej in lower and "python" not in lower:
                 return False
 
-        allowed_keywords = [
-            "python", "питон", "backend", "бэкенд", "бэкэнд",
-            "fastapi", "django", "flask", "разработчик", "developer",
-            "программист", "devops", "девопс", "стажер", "стажёр",
-            "intern", "qa auto", "автоматизатор"
-        ]
-        return any(k in lower for k in allowed_keywords)
+        return True
 
     def check_stop_words(self, title: str, key_skills: List[str], desc_html: str) -> bool:
         """
-        Checks entire vacancy content for forbidden technologies:
-        telecom, Cisco, Mikrotik, OSPF, FreeBSD, Bitrix, 1C, etc.
+        Checks entire vacancy content for forbidden specific technologies:
+        deep ML/math (pytorch, transformers, LLM, math stats),
+        deep networking & hardware (OSI, BGP, Cisco, systemd admin),
+        1C, Bitrix, mobile native apps.
         """
         soup = BeautifulSoup(desc_html, "html.parser")
         desc_text = soup.get_text(" ", strip=True).lower()
@@ -106,9 +100,11 @@ class FilterService:
 
     def calculate_stack_match(self, title: str, key_skills: List[str], desc_html: str) -> Tuple[int, List[str]]:
         """
-        Calculates honest stack match (%) based on user's core stack:
-        Python (25%), Web frameworks (20%), ORM/Postgres (15%), Pydantic (15%),
-        Docker (10%), Git (10%), CI/CD (10%), Asyncio (10%), Linux (5%).
+        Calculates honest stack match (%) based on Python as mandatory core
+        plus any accessible generalist tooling:
+        Web (FastAPI/Django/Flask), DB (SQL/PostgreSQL/SQLAlchemy), Pydantic,
+        Docker, Git, CI/CD, Testing (pytest), Frontend (React/JS/HTML),
+        Data (pandas/numpy/ETL), Asyncio, Linux/Bash.
         """
         soup = BeautifulSoup(desc_html, "html.parser")
         desc_text = soup.get_text(" ", strip=True).lower()
@@ -120,7 +116,7 @@ class FilterService:
             return 0, []
 
         matched: List[str] = ["Python"]
-        score = 25
+        score = 30
 
         # 1. Web Frameworks (FastAPI / Django / Flask / Aiohttp)
         if re.search(r"\bfastapi\b|\bfast-api\b", full_text):
@@ -136,13 +132,18 @@ class FilterService:
             matched.append("Aiohttp")
             score += 15
 
-        # 2. ORM & DB (SQLAlchemy, PostgreSQL)
+        # 2. ORM, DB & SQL (SQLAlchemy, PostgreSQL, MySQL, Redis, SQL)
         if re.search(r"\bsqlalchemy\b|\balchemy\b", full_text):
             matched.append("SQLAlchemy")
             score += 15
-        elif re.search(r"\bpostgres\b|\bpostgresql\b|\bпостгрес\b|\bsql\b", full_text):
-            matched.append("PostgreSQL")
-            score += 10
+        if re.search(r"\bpostgres\b|\bpostgresql\b|\bпостгрес\b", full_text):
+            if "PostgreSQL" not in matched:
+                matched.append("PostgreSQL")
+                score += 10
+        elif re.search(r"\bsql\b|\bреляционн", full_text):
+            if "SQL" not in matched:
+                matched.append("SQL")
+                score += 10
 
         # 3. Pydantic
         if re.search(r"\bpydantic\b", full_text):
@@ -154,7 +155,7 @@ class FilterService:
             matched.append("Docker")
             score += 10
 
-        if re.search(r"\bci/cd\b|\bcicd\b", full_text):
+        if re.search(r"\bci/cd\b|\bcicd\b|\bgithub actions\b|\bgitlab ci\b", full_text):
             matched.append("CI/CD")
             score += 10
 
@@ -163,23 +164,35 @@ class FilterService:
             matched.append("Git")
             score += 10
 
-        # 6. Asyncio
+        # 6. Testing / QA (pytest, unittest, autotests) - Accepted Case 3
+        if re.search(r"\bpytest\b|\bunittest\b|\bтестирован|\bавтотест|\bтест[а-я]*\b", full_text):
+            matched.append("Testing/Pytest")
+            score += 15
+
+        # 7. Frontend / Fullstack (React, JS, TS, HTML, CSS) - Accepted Case 7
+        if re.search(r"\breact\b|\btypescript\b|\bjavascript\b|\bjs\b|\bts\b|\bfrontend\b|\bверстк|\bhtml\b", full_text):
+            matched.append("Frontend/Fullstack")
+            score += 15
+
+        # 8. Data / ETL / Basic ML (pandas, numpy, ETL) - Accepted Cases 1 & 6
+        if re.search(r"\bpandas\b|\bnumpy\b|\betl\b|\bобработк[а-я]* данн", full_text):
+            matched.append("Data/ETL")
+            score += 15
+
+        # 9. Asyncio
         if re.search(r"\basyncio\b|\bасинхрон", full_text):
             matched.append("Asyncio")
             score += 10
 
-        # 7. Linux & REST API
-        if re.search(r"\blinux\b|\bлинукс\b", full_text):
-            matched.append("Linux")
+        # 10. Linux & REST API
+        if re.search(r"\blinux\b|\bлинукс\b|\bbash\b", full_text):
+            matched.append("Linux/Bash")
             score += 5
 
         if re.search(r"\brest\b|\brest api\b|\bapi\b", full_text):
             if "REST API" not in matched:
                 matched.append("REST API")
                 score += 5
-
-        if re.search(r"\bbackend\b|\bбэкенд\b|\bбэкэнд\b", full_text):
-            score += 5
 
         return min(score, 100), matched
 
@@ -269,10 +282,10 @@ class FilterService:
         if not sal_passed:
             return False, {}
 
-        # 6. Honest stack match: must be >= 60% (or >= 50% for explicit intern/стажировка)
+        # 6. Honest stack match: must be >= 50% (or >= 40% for explicit intern/junior)
         match_score, matched_skills = self.calculate_stack_match(title, key_skills, desc_html)
-        is_intern = any(w in title.lower() for w in ["стажер", "стажёр", "intern", "junior", "младший"])
-        min_threshold = 50 if is_intern else 60
+        is_intern = any(w in title.lower() for w in ["стажер", "стажёр", "intern", "junior", "младший", "trainee"])
+        min_threshold = 40 if is_intern else 50
 
         if match_score < min_threshold:
             return False, {}

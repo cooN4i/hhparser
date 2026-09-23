@@ -35,8 +35,8 @@ async def verify():
     client = HHClient()
     filter_service = FilterService()
     try:
-        vacancies = await client.get_all_target_vacancies()
-        print(f"✅ Получено вакансий для детального анализа: {len(vacancies)}")
+        vacancies, all_ids = await client.get_all_target_vacancies(max_details=10)
+        print(f"✅ Найдено на поиске карточек: {len(all_ids)}, детально спарсено свежих: {len(vacancies)}")
 
         passed_count = 0
         for v in vacancies:
@@ -46,6 +46,7 @@ async def verify():
                 print(f"  [+] Подходит: {enriched['title']} | {enriched['company']}")
                 print(f"      З/п: {enriched['salary_formatted']} | {enriched['format_info']}")
                 print(f"      Стек: {enriched['match_score']}% {enriched['matched_skills']}")
+                print(f"      Опубликовано: {enriched.get('published_at')}")
                 if enriched['requirements_snippet']:
                     print(f"      Требования: {enriched['requirements_snippet'][:100]}...")
             else:

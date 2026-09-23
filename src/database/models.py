@@ -21,3 +21,12 @@ class Vacancy(Base):
     matched_skills: Mapped[str] = mapped_column(String(500), default="")
     published_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ProcessedVacancy(Base):
+    __tablename__ = "processed_vacancies"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="rejected")  # "sent", "rejected", "baseline"
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+

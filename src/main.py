@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import logging
 import sys
 
@@ -13,7 +13,7 @@ from sqlalchemy import select, func
 
 from src.config import settings
 from src.database.session import init_db, async_session_factory
-from src.database.models import Vacancy
+from src.database.models import Vacancy, ProcessedVacancy
 from src.services.hh_client import HHClient
 from src.services.filter_service import FilterService
 from src.services.notification_service import NotificationService
@@ -36,14 +36,14 @@ class JobMonitor:
         self.notification_service = NotificationService(self.bot, settings.CHAT_ID)
         self.lock = asyncio.Lock()
 
-    async def get_existing_ids(self) -> set[str]:
+    async def get_processed_ids(self) -> set[str]:
         async with async_session_factory() as session:
-            result = await session.execute(select(Vacancy.id))
+            result = await session.execute(select(ProcessedVacancy.id))
             return set(result.scalars().all())
 
     async def is_first_run(self) -> bool:
         async with async_session_factory() as session:
-            result = await session.execute(select(func.count(Vacancy.id)))
+            result = await session.execute(select(func.count(ProcessedVacancy.id)))
             count = result.scalar() or 0
             return count == 0
 
@@ -76,71 +76,112 @@ class JobMonitor:
             published_at=pub_datetime,
             created_at=datetime.now(timezone.utc).replace(tzinfo=None)
         )
-        session.add(vacancy_record)
+        await session.merge(vacancy_record)
 
     async def run_check(self) -> int:
         async with self.lock:
-            logger.info("Запуск поиска вакансий на HeadHunter...")
+            logger.info("Запуск проверки свежих вакансий на HeadHunter...")
             first_run = await self.is_first_run()
-            existing_ids = await self.get_existing_ids()
+            processed_ids = await self.get_processed_ids()
 
-            raw_items = await self.hh_client.get_all_target_vacancies(existing_ids=existing_ids)
-            logger.info(f"Получено {len(raw_items)} новых вакансий для детального анализа.")
-
-            passed_vacancies: List[Dict[str, Any]] = []
-            for item in raw_items:
-                vac_id = str(item.get("id"))
-                if vac_id in existing_ids:
-                    continue
-
-                passed, enriched = self.filter_service.evaluate_vacancy(item)
-                if passed:
-                    passed_vacancies.append(enriched)
-
-            logger.info(f"Прошло фильтры подходящих вакансий: {len(passed_vacancies)}.")
-
-            if not passed_vacancies:
-                logger.info("Подходящих вакансий по фильтрам не найдено.")
-                return 0
-
-            # Helper to get publication timestamp for sorting
-            def get_sort_key(vac):
-                dt = vac.get("published_at")
-                if isinstance(dt, datetime):
-                    if dt.tzinfo is not None:
-                        return dt.astimezone(timezone.utc).replace(tzinfo=None)
-                    return dt
-                return datetime.min
-
-            # Сортируем строго от самых свежих к более старым (по реальной дате публикации на HH)
-            passed_vacancies.sort(
-                key=get_sort_key,
-                reverse=True
+            # get_all_target_vacancies returns (detailed_vacancies, all_search_ids)
+            # detailed_vacancies are already sorted by published_at DESC!
+            detailed_items, all_search_ids = await self.hh_client.get_all_target_vacancies(
+                existing_ids=processed_ids,
+                max_details=15
             )
 
-            # Берём ровно ОДНУ самую последнюю (свежую) вакансию
-            latest_vacancy = passed_vacancies[0]
-            vac_id = str(latest_vacancy["id"])
+            # 1. Первый запуск: фиксируем baseline
+            if first_run:
+                logger.info(
+                    f"Первый запуск бота: зафиксировано {len(all_search_ids)} объявлений на HH. "
+                    "Устанавливаю baseline..."
+                )
 
-            # Проверяем: отправляли ли мы её уже пользователю?
-            if vac_id in existing_ids:
-                logger.info(f"Самая последняя вакансия ID {vac_id} ('{latest_vacancy['title']}') уже была отправлена. Новых вакансий нет.")
+                # Ищем самую свежую вакансию, опубликованную за последние 3 часа
+                now = datetime.now(timezone.utc)
+                cutoff = now - timedelta(hours=3)
+
+                fresh_candidates = []
+                for item in detailed_items:
+                    pub = item.get("published_at")
+                    if pub:
+                        pub_aware = pub if pub.tzinfo is not None else pub.replace(tzinfo=timezone.utc)
+                        if pub_aware >= cutoff:
+                            fresh_candidates.append(item)
+
+                passed_baseline = []
+                for item in fresh_candidates:
+                    passed, enriched = self.filter_service.evaluate_vacancy(item)
+                    if passed:
+                        passed_baseline.append(enriched)
+
+                # Записываем все найденные ID как baseline в processed_vacancies
+                async with async_session_factory() as session:
+                    async with session.begin():
+                        for vid in all_search_ids:
+                            await session.merge(ProcessedVacancy(id=vid, status="baseline"))
+
+                if passed_baseline:
+                    newest = passed_baseline[0]
+                    logger.info(
+                        f"Первый запуск: отправляю свежую вакансию ID {newest['id']} "
+                        f"('{newest['title']}', {newest.get('published_at')})"
+                    )
+                    success = await self.notification_service.send_vacancy_notification(newest)
+                    async with async_session_factory() as session:
+                        async with session.begin():
+                            await self.save_vacancy(session, newest)
+                            await session.merge(ProcessedVacancy(id=str(newest["id"]), status="sent"))
+                    return 1 if success else 0
+                else:
+                    logger.info("Первый запуск: подходящих вакансий за последние 3 часа нет. Baseline зафиксирован.")
+                    return 0
+
+            # 2. Регулярная проверка (каждые 5 минут):
+            # detailed_items содержат только вакансии, которых ещё не было в базе (новые)
+            if not detailed_items:
+                logger.info("Новых объявлений на HH не обнаружено. Ожидание следующего цикла.")
                 return 0
 
-            # Если ещё не отправляли — отправляем пользователю ровно эту одну новую вакансию
-            logger.info(f"Найдена новая свежая вакансия ID {vac_id} ('{latest_vacancy['title']}'). Отправляю пользователю...")
-            success = await self.notification_service.send_vacancy_notification(latest_vacancy)
+            logger.info(f"Найдено {len(detailed_items)} новых объявлений на HH. Анализирую от самых свежих...")
 
-            # Сохраняем в БД: саму отправленную вакансию и остальные найденные более старые,
-            # чтобы при следующих проверках они не считались новыми
+            newest_matched = None
+            eval_results = []
+
+            for item in detailed_items:
+                vid = str(item["id"])
+                passed, enriched = self.filter_service.evaluate_vacancy(item)
+                if passed:
+                    status = "sent" if newest_matched is None else "matched_queued"
+                    eval_results.append((vid, status, enriched))
+                    if newest_matched is None:
+                        newest_matched = enriched
+                else:
+                    eval_results.append((vid, "rejected", None))
+
+            # Фиксируем все проверенные ID в базе, чтобы никогда не проверять их повторно
             async with async_session_factory() as session:
                 async with session.begin():
-                    for vac in passed_vacancies:
-                        await self.save_vacancy(session, vac)
+                    for vid, status, _ in eval_results:
+                        await session.merge(ProcessedVacancy(id=vid, status=status))
 
-            sent_count = 1 if success else 0
-            logger.info(f"Отправлено уведомление по новой вакансии (ID: {vac_id}). Сохранено в базу: {len(passed_vacancies)}.")
-            return sent_count
+            if newest_matched:
+                pub_time = newest_matched.get("published_at")
+                logger.info(
+                    f"Найдена свежая подходящая вакансия ID {newest_matched['id']} "
+                    f"('{newest_matched['title']}', {pub_time}). Отправляю уведомление пользователю..."
+                )
+                success = await self.notification_service.send_vacancy_notification(newest_matched)
+                async with async_session_factory() as session:
+                    async with session.begin():
+                        await self.save_vacancy(session, newest_matched)
+                sent_count = 1 if success else 0
+                logger.info(f"Уведомление отправлено (ID: {newest_matched['id']}).")
+                return sent_count
+            else:
+                logger.info(f"Все {len(detailed_items)} новых объявлений были отклонены фильтрами.")
+                return 0
 
     async def scheduler_loop(self):
         logger.info(f"Фоновый планировщик запущен. Периодичность: {settings.CHECK_INTERVAL_SECONDS} секунд.")
