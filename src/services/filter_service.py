@@ -165,7 +165,7 @@ class FilterService:
             score += 10
 
         # 6. Testing / QA (pytest, unittest, autotests) - Accepted Case 3
-        if re.search(r"\bpytest\b|\bunittest\b|\bтестирован|\bавтотест|\bтест[а-я]*\b", full_text):
+        if re.search(r"\bpytest\b|\bunittest\b|\bавтотест[а-я]*\b|\bqa auto\b|\bнаписание тестов\b|\bавтоматизац[а-я]* тестирован|\bunit-тест[а-я]*\b", full_text):
             matched.append("Testing/Pytest")
             score += 15
 
@@ -199,41 +199,81 @@ class FilterService:
     def extract_requirements(self, desc_html: str) -> str:
         """
         Accurately extracts candidate requirements list from HTML description.
-        Finds sections like 'Навыки:', 'Требования:', 'Мы ждем:' and extracts bullet points.
+        Finds sections like 'Требования:', 'От тебя мы ждем:', 'Ожидания:', 'Навыки:'
+        and strictly stops BEFORE 'Мы предлагаем:', 'Условия:', 'Обязанности:',
+        ensuring perks/benefits are NEVER extracted as requirements.
         """
         if not desc_html:
             return ""
 
         soup = BeautifulSoup(desc_html, "html.parser")
 
-        # 1. Look for section headings
-        for p in soup.find_all(["p", "div", "strong", "b"]):
-            t = p.get_text(" ", strip=True).lower()
-            if any(h in t for h in ["навыки:", "требования:", "мы ждем:", "ожидания:", "что для нас важно", "наш идеальный кандидат", "требуемый опыт"]):
-                cur = p
-                for _ in range(5):
-                    nxt = cur.find_next_sibling()
-                    if nxt and nxt.name in ["ul", "ol"]:
-                        lis = [li.get_text(" ", strip=True) for li in nxt.find_all("li")[:5]]
-                        if lis:
-                            return "\n".join(f"• {li.lstrip('•-*— ')}" for li in lis)
-                    elif nxt and nxt.name in ["p", "div"] and len(nxt.get_text(strip=True)) > 15:
-                        return nxt.get_text(" ", strip=True)[:300]
-                    if cur.parent:
-                        cur = cur.parent
-                    else:
+        req_headers = [
+            "требования", "от тебя мы ждем", "от вас мы ждем",
+            "мы ждем", "ожидания от кандидата", "ожидания",
+            "что для нас важно", "наш идеальный кандидат",
+            "навыки", "требуемый опыт", "требуемый стек"
+        ]
+
+        stop_headers = [
+            "мы предлагаем", "что мы предлагаем", "условия", "условия работы",
+            "бенефиты", "будет плюсом", "плюсом будет", "чем предстоит заниматься",
+            "задачи", "обязанности", "что делать", "о компании"
+        ]
+
+        header_el = None
+        for el in soup.find_all(["p", "div", "h2", "h3", "h4", "strong", "b"]):
+            text = el.get_text(" ", strip=True).lower().rstrip(" :")
+            if any(h in text for h in req_headers):
+                header_el = el
+                break
+
+        if header_el:
+            bullets = []
+            curr = header_el
+            if curr.parent and curr.parent.name in ["p", "div", "h2", "h3", "h4"]:
+                curr = curr.parent
+
+            for nxt in curr.find_next_siblings():
+                t_lower = nxt.get_text(" ", strip=True).lower()
+                if any(sh in t_lower for sh in stop_headers):
+                    break
+
+                if nxt.name in ["ul", "ol"]:
+                    for li in nxt.find_all("li")[:6]:
+                        txt = li.get_text(" ", strip=True)
+                        if txt:
+                            clean_li = re.sub(r"^[\s•\-*—–\d\.]+", "", txt).strip()
+                            bullets.append(f"• {clean_li}")
+                    if bullets:
                         break
+                elif nxt.name in ["p", "div"]:
+                    txt = nxt.get_text(" ", strip=True)
+                    if re.match(r"^[\s•\-*—–\d\.]+", txt) and len(txt) > 5:
+                        clean_txt = re.sub(r"^[\s•\-*—–\d\.]+", "", txt).strip()
+                        if clean_txt:
+                            bullets.append(f"• {clean_txt}")
+                    elif len(txt) > 20:
+                        bullets.append(f"• {txt}")
 
-        # 2. Fallback: look for the first <ul>
-        first_ul = soup.find("ul")
-        if first_ul:
-            lis = [li.get_text(" ", strip=True) for li in first_ul.find_all("li")[:4]]
+                if len(bullets) >= 5:
+                    break
+
+            if bullets:
+                return "\n".join(bullets[:5])
+
+        # Fallback: scan for any list that is NOT under "мы предлагаем" or "условия"
+        for ul in soup.find_all(["ul", "ol"]):
+            prev = ul.find_previous(["p", "div", "h2", "h3", "h4", "strong", "b"])
+            if prev:
+                prev_text = prev.get_text(" ", strip=True).lower()
+                if any(sh in prev_text for sh in stop_headers):
+                    continue
+            lis = [li.get_text(" ", strip=True) for li in ul.find_all("li")[:5]]
             if lis:
-                return "\n".join(f"• {li.lstrip('•-*— ')}" for li in lis)
+                return "\n".join(f"• {re.sub(r'^[\s•\-*—–\d\.]+', '', li).strip()}" for li in lis if li)
 
-        # 3. Fallback: clean text lines
-        lines = [l.strip() for l in soup.get_text("\n", strip=True).split("\n") if len(l.strip()) > 25]
-        return "\n".join(lines[:2]) if lines else ""
+        return ""
 
     def check_freshness(self, published_at: Optional[datetime]) -> bool:
         """Checks if vacancy is not older than MAX_VACANCY_AGE_DAYS."""

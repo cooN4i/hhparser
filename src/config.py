@@ -47,6 +47,20 @@ class Settings(BaseSettings):
         "администратор баз данных",
         "db administrator",
         "верстальщик",
+        # Cybersecurity / Pentest (NOT software development)
+        "информационная безопасность",
+        "информационной безопасности",
+        "информационн безопасность",
+        "кибербезопасность",
+        "кибербезопасности",
+        "пентест",
+        "pentest",
+        "security analyst",
+        "аналитик иб",
+        "специалист иб",
+        "инженер иб",
+        "защита информации",
+        "защите информации",
         "1с",
         "1c",
         "битрикс",
@@ -72,7 +86,7 @@ class Settings(BaseSettings):
         "оператор call-центра"
     ]
 
-    # Stop words for FULL CONTENT (forbidden deep specifics: math, transformers, networking, hardware, OS admin)
+    # Stop words for FULL CONTENT (forbidden deep specifics: math, transformers, networking, hardware, OS admin, pentest)
     CONTENT_STOP_WORDS: List[str] = [
         # 1. Deep ML / Data Science / Math specifics (Rejected Case 2)
         "pytorch",
@@ -143,7 +157,19 @@ class Settings(BaseSettings):
         "alt linux",
         "astra linux",
         "ред ос",
-        # 4. Other ecosystems & CMS
+        # 4. Cybersecurity, pentest, vulnerability scanning (Not development)
+        "тестирование на проникновение",
+        "тестирования на проникновение",
+        "тестированию на проникновение",
+        "тестировании на проникновении",
+        "пентест",
+        "pentest",
+        "bug bounty",
+        "ctf",
+        "поиск уязвимостей",
+        "анализ защищенности",
+        "внешнего периметра",
+        # 5. Other ecosystems & CMS
         "битрикс",
         "bitrix",
         "1с-программист",
@@ -151,7 +177,7 @@ class Settings(BaseSettings):
         "wordpress",
         "вордпресс",
         "joomla",
-        # 5. Mobile app frameworks
+        # 6. Mobile app frameworks
         "react native",
         "flutter"
     ]
