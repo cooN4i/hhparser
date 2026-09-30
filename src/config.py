@@ -16,9 +16,15 @@ class Settings(BaseSettings):
     # Parser
     CHECK_INTERVAL_SECONDS: int = 300
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/vacancies.db"
-    MIN_SALARY_RUB: int = 50000
+    MIN_SALARY_RUB: int = 60000
     MAX_VACANCY_AGE_DAYS: int = 7  # Maximum age in days (covers weekend postings)
     HH_USER_AGENT: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+
+    # Groq AI Configuration
+    GROQ_API_KEY: str = ""
+    GROQ_PRIMARY_MODEL: str = "openai/gpt-oss-120b"
+    GROQ_FALLBACK_MODEL: str = "openai/gpt-oss-20b"
+
 
     # User stack
     MY_STACK: List[str] = [

@@ -9,7 +9,7 @@ from telebot.async_telebot import AsyncTeleBot
 from src.config import settings
 from src.services.hh_client import HHClient
 from src.services.filter_service import FilterService
-from src.services.notification_service import NotificationService
+from src.services.groq_service import GroqService
 from src.database.session import init_db
 
 
@@ -31,30 +31,46 @@ async def verify():
         print(f"❌ Ошибка инициализации БД: {e}")
         return False
 
-    print("\n=== 3. Проверка поиска вакансий через HHClient ===")
-    client = HHClient()
-    filter_service = FilterService()
+    print("\n=== 3. Проверка Groq AI Service ===")
+    groq_service = GroqService()
     try:
-        vacancies, all_ids = await client.get_all_target_vacancies(max_details=10)
-        print(f"✅ Найдено на поиске карточек: {len(all_ids)}, детально спарсено свежих: {len(vacancies)}")
-
-        passed_count = 0
-        for v in vacancies:
-            passed, enriched = filter_service.evaluate_vacancy(v)
-            if passed:
-                passed_count += 1
-                print(f"  [+] Подходит: {enriched['title']} | {enriched['company']}")
-                print(f"      З/п: {enriched['salary_formatted']} | {enriched['format_info']}")
-                print(f"      Стек: {enriched['match_score']}% {enriched['matched_skills']}")
-                print(f"      Опубликовано: {enriched.get('published_at')}")
-                if enriched['requirements_snippet']:
-                    print(f"      Требования: {enriched['requirements_snippet'][:100]}...")
-            else:
-                print(f"  [-] Отклонена: {v.get('title')}")
-
-        print(f"\nИз {len(vacancies)} проверенных подошло: {passed_count}")
+        test_vac = {
+            "title": "Junior Backend Python Developer",
+            "company": "Tech Solutions",
+            "description": "Ищем начинающего Python-разработчика со знанием FastAPI, PostgreSQL и Docker. Готовы обучать.",
+            "requirements": "Базовые знания Python, FastAPI, SQL. Желание учиться.",
+            "key_skills": ["Python", "FastAPI", "PostgreSQL", "Docker"],
+            "experience": "noExperience",
+            "employment": "full",
+            "schedule": "remote",
+            "salary_from": 70000,
+            "salary_to": 90000,
+            "salary_currency": "RUR",
+            "city": "Санкт-Петербург"
+        }
+        is_suitable, enriched = await groq_service.evaluate_vacancy(test_vac)
+        if is_suitable:
+            print(f"✅ Groq AI успешно проанализировал тестовую вакансию!")
+            print(f"   Подходит: {is_suitable}, Оценка стека: {enriched.get('match_score')}%")
+            print(f"   Причина: {enriched.get('ai_reason')}")
+        else:
+            print(f"⚠️ Groq вернул ответ, но результат: is_suitable={is_suitable}")
     except Exception as e:
-        print(f"❌ Ошибка при проверке парсера: {e}")
+        print(f"❌ Ошибка при проверке Groq AI: {e}")
+        return False
+
+    print("\n=== 4. Проверка поиска вакансий через HHClient ===")
+    client = HHClient()
+    try:
+        vacancies, all_ids = await client.get_all_target_vacancies(max_details=5)
+        print(f"✅ Найдено на поиске карточек: {len(all_ids)}, спарсено свежих: {len(vacancies)}")
+        if vacancies:
+            v = vacancies[0]
+            print(f"   Проверяем первую найденную вакансию: {v.get('title')} ({v.get('company')})")
+            ai_pass, ai_res = await groq_service.evaluate_vacancy(v)
+            print(f"   AI вердикт: suitable={ai_pass}, score={ai_res.get('match_score')}%, reason='{ai_res.get('ai_reason')}'")
+    except Exception as e:
+        print(f"❌ Ошибка при проверке парсера HH: {e}")
         return False
     finally:
         await bot.close_session()

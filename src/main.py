@@ -16,6 +16,7 @@ from src.database.session import init_db, async_session_factory
 from src.database.models import Vacancy, ProcessedVacancy
 from src.services.hh_client import HHClient
 from src.services.filter_service import FilterService
+from src.services.groq_service import GroqService
 from src.services.notification_service import NotificationService
 from src.bot.handlers import register_handlers
 
@@ -33,6 +34,7 @@ class JobMonitor:
         self.bot = AsyncTeleBot(settings.BOT_TOKEN)
         self.hh_client = HHClient()
         self.filter_service = FilterService()
+        self.groq_service = GroqService()
         self.notification_service = NotificationService(self.bot, settings.CHAT_ID)
         self.lock = asyncio.Lock()
 
@@ -80,7 +82,7 @@ class JobMonitor:
 
     async def run_check(self) -> int:
         async with self.lock:
-            logger.info("Запуск проверки свежих вакансий на HeadHunter...")
+            logger.info("Запуск проверки свежих IT-вакансий на HeadHunter...")
             first_run = await self.is_first_run()
             processed_ids = await self.get_processed_ids()
 
@@ -98,6 +100,12 @@ class JobMonitor:
                     "Устанавливаю baseline..."
                 )
 
+                # Записываем все найденные ID как baseline в processed_vacancies
+                async with async_session_factory() as session:
+                    async with session.begin():
+                        for vid in all_search_ids:
+                            await session.merge(ProcessedVacancy(id=vid, status="baseline"))
+
                 # Ищем самую свежую вакансию, опубликованную за последние 3 часа
                 now = datetime.now(timezone.utc)
                 cutoff = now - timedelta(hours=3)
@@ -110,33 +118,38 @@ class JobMonitor:
                         if pub_aware >= cutoff:
                             fresh_candidates.append(item)
 
-                passed_baseline = []
+                sent_count = 0
                 for item in fresh_candidates:
-                    passed, enriched = self.filter_service.evaluate_vacancy(item)
-                    if passed:
-                        passed_baseline.append(enriched)
-
-                # Записываем все найденные ID как baseline в processed_vacancies
-                async with async_session_factory() as session:
-                    async with session.begin():
-                        for vid in all_search_ids:
-                            await session.merge(ProcessedVacancy(id=vid, status="baseline"))
-
-                if passed_baseline:
-                    newest = passed_baseline[0]
-                    logger.info(
-                        f"Первый запуск: отправляю свежую вакансию ID {newest['id']} "
-                        f"('{newest['title']}', {newest.get('published_at')})"
+                    vid = str(item["id"])
+                    # Быстрый локальный пре-фильтр локации и зарплаты
+                    loc_ok, _ = self.filter_service.check_location(
+                        item.get("address", ""), item.get("employment_text", ""), item.get("description_html", "")
                     )
-                    success = await self.notification_service.send_vacancy_notification(newest)
-                    async with async_session_factory() as session:
-                        async with session.begin():
-                            await self.save_vacancy(session, newest)
-                            await session.merge(ProcessedVacancy(id=str(newest["id"]), status="sent"))
-                    return 1 if success else 0
-                else:
+                    sal_ok, _, _, _, _ = self.filter_service.parse_and_check_salary(item.get("salary_raw"))
+                    if not (loc_ok and sal_ok):
+                        continue
+
+                    # Оценка через Groq AI
+                    is_suitable, enriched = await self.groq_service.evaluate_vacancy(item)
+                    await asyncio.sleep(1.5)
+
+                    if is_suitable:
+                        logger.info(
+                            f"Первый запуск: отправляю свежую вакансию ID {enriched['id']} "
+                            f"('{enriched['title']}', {enriched.get('published_at')})"
+                        )
+                        success = await self.notification_service.send_vacancy_notification(enriched)
+                        async with async_session_factory() as session:
+                            async with session.begin():
+                                await self.save_vacancy(session, enriched)
+                                await session.merge(ProcessedVacancy(id=vid, status="sent"))
+                        if success:
+                            sent_count += 1
+                        break  # При первом запуске отправляем только 1 самую свежую
+
+                if sent_count == 0:
                     logger.info("Первый запуск: подходящих вакансий за последние 3 часа нет. Baseline зафиксирован.")
-                    return 0
+                return sent_count
 
             # 2. Регулярная проверка (каждые 5 минут):
             # detailed_items содержат только вакансии, которых ещё не было в базе (новые)
@@ -144,44 +157,58 @@ class JobMonitor:
                 logger.info("Новых объявлений на HH не обнаружено. Ожидание следующего цикла.")
                 return 0
 
-            logger.info(f"Найдено {len(detailed_items)} новых объявлений на HH. Анализирую от самых свежих...")
-
-            newest_matched = None
-            eval_results = []
+            logger.info(f"Найдено {len(detailed_items)} новых объявлений на HH. Анализирую через Groq AI...")
+            sent_count = 0
 
             for item in detailed_items:
                 vid = str(item["id"])
-                passed, enriched = self.filter_service.evaluate_vacancy(item)
-                if passed:
-                    status = "sent" if newest_matched is None else "matched_queued"
-                    eval_results.append((vid, status, enriched))
-                    if newest_matched is None:
-                        newest_matched = enriched
-                else:
-                    eval_results.append((vid, "rejected", None))
 
-            # Фиксируем все проверенные ID в базе, чтобы никогда не проверять их повторно
-            async with async_session_factory() as session:
-                async with session.begin():
-                    for vid, status, _ in eval_results:
-                        await session.merge(ProcessedVacancy(id=vid, status=status))
-
-            if newest_matched:
-                pub_time = newest_matched.get("published_at")
-                logger.info(
-                    f"Найдена свежая подходящая вакансия ID {newest_matched['id']} "
-                    f"('{newest_matched['title']}', {pub_time}). Отправляю уведомление пользователю..."
+                # Шаг 1: Быстрый локальный пре-чек локации и минимальной зарплаты
+                # (сберегает вызовы Groq от очевидных офисов в других городах или вакансий < 60к)
+                loc_ok, _ = self.filter_service.check_location(
+                    item.get("address", ""), item.get("employment_text", ""), item.get("description_html", "")
                 )
-                success = await self.notification_service.send_vacancy_notification(newest_matched)
-                async with async_session_factory() as session:
-                    async with session.begin():
-                        await self.save_vacancy(session, newest_matched)
-                sent_count = 1 if success else 0
-                logger.info(f"Уведомление отправлено (ID: {newest_matched['id']}).")
-                return sent_count
-            else:
-                logger.info(f"Все {len(detailed_items)} новых объявлений были отклонены фильтрами.")
-                return 0
+                sal_ok, _, _, _, _ = self.filter_service.parse_and_check_salary(item.get("salary_raw"))
+
+                if not (loc_ok and sal_ok):
+                    logger.debug(f"Вакансия {vid} отсеяна пре-фильтром локации/зарплаты.")
+                    async with async_session_factory() as session:
+                        async with session.begin():
+                            await session.merge(ProcessedVacancy(id=vid, status="rejected"))
+                    continue
+
+                # Шаг 2: Семантическая оценка через Groq AI
+                is_suitable, enriched = await self.groq_service.evaluate_vacancy(item)
+                await asyncio.sleep(1.5)
+
+                if is_suitable:
+                    pub_time = enriched.get("published_at")
+                    logger.info(
+                        f"Найдена подходящая вакансия ID {enriched['id']} "
+                        f"('{enriched['title']}', {pub_time}). Отправляю уведомление пользователю..."
+                    )
+                    success = await self.notification_service.send_vacancy_notification(enriched)
+                    async with async_session_factory() as session:
+                        async with session.begin():
+                            await self.save_vacancy(session, enriched)
+                            await session.merge(ProcessedVacancy(id=vid, status="sent"))
+                    if success:
+                        sent_count += 1
+                    # Пауза между отправками нескольких сообщений в Telegram
+                    await asyncio.sleep(1.5)
+                elif enriched:
+                    async with async_session_factory() as session:
+                        async with session.begin():
+                            await session.merge(ProcessedVacancy(id=vid, status="rejected"))
+                else:
+                    # В случае редкой невосстановимой ошибки Groq помечаем failed_skip,
+                    # чтобы вакансия не блокировала очередь
+                    async with async_session_factory() as session:
+                        async with session.begin():
+                            await session.merge(ProcessedVacancy(id=vid, status="failed_skip"))
+
+            logger.info(f"Цикл проверки завершён. Отправлено новых вакансий: {sent_count}.")
+            return sent_count
 
     async def scheduler_loop(self):
         logger.info(f"Фоновый планировщик запущен. Периодичность: {settings.CHECK_INTERVAL_SECONDS} секунд.")

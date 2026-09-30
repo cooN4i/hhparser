@@ -265,14 +265,18 @@ class HHClient:
         if existing_ids is None:
             existing_ids = set()
 
+        query = (
+            '(программист OR разработчик OR developer OR backend OR qa OR devops OR junior OR python OR "стажер-разработчик" OR "стажер разработчик" OR "стажер программист" OR "стажер it" OR "it стажер") '
+            'NOT (1C OR 1С OR PHP OR дизайнер OR "руководитель проектов")'
+        )
+
         search_configs = [
             # SPb (area 2)
-            {"text": "python", "area": 2},
-            {"text": "стажер python OR intern python", "area": 2},
+            {"text": query, "area": 2},
             # Remote across Russia
-            {"text": "python", "schedule": "remote"},
-            {"text": "стажер python OR intern python", "schedule": "remote"},
+            {"text": query, "schedule": "remote"},
         ]
+
 
         raw_cards_by_id: Dict[str, Dict[str, Any]] = {}
 

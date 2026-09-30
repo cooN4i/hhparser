@@ -53,8 +53,11 @@ jobs:
             cat << 'EOF' > .env
             BOT_TOKEN=${{ secrets.BOT_TOKEN }}
             CHAT_ID=${{ secrets.CHAT_ID }}
+            GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
+            GROQ_PRIMARY_MODEL=openai/gpt-oss-120b
+            GROQ_FALLBACK_MODEL=openai/gpt-oss-20b
             CHECK_INTERVAL_SECONDS=300
-            MIN_SALARY_RUB=50000
+            MIN_SALARY_RUB=60000
             DATABASE_URL=sqlite+aiosqlite:///./data/vacancies.db
             HH_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36
             DOCKER_IMAGE=${{ secrets.DOCKER_USERNAME }}/hhparser:latest
