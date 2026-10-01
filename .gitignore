@@ -17,4 +17,6 @@ data/
 .DS_Store
 Thumbs.db
 scratch/
+*.log
+server_logs_output.txt
 
