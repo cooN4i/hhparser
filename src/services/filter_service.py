@@ -52,11 +52,26 @@ class FilterService:
         return True, sal_from, sal_to, curr, clean
 
     def check_location(self, address: str, employment_text: str, desc_text: str) -> Tuple[bool, str]:
-        """Checks location: St. Petersburg or Remote."""
-        combined = f"{address} {employment_text} {desc_text[:300]}".lower()
+        """Checks location: St. Petersburg or Remote, strictly rejecting relocation traps."""
+        address_lower = (address or "").lower()
+        emp_lower = (employment_text or "").lower()
+        desc_lower = (desc_text or "").lower()
+        combined = f"{address_lower} {emp_lower} {desc_lower}"
 
-        is_spb = any(c in combined for c in ["санкт-петербург", "питер", "спб", "петербург"])
-        is_remote = any(r in combined for r in ["удален", "дистанцион", "remote"])
+        # 1. Проверка на релокационные ловушки (когда вакансия размещена в СПб, но требует переезда)
+        relocation_keywords = [
+            "с переездом", "переезд в", "релокация в", "релокацией в",
+            "релокация:", "переезд:", "елабуг", "алабуг", "вахт", "вахтовый"
+        ]
+        is_spb_reloc = "переезд в санкт-петербург" in desc_lower or "переезд в спб" in desc_lower
+
+        if any(rk in desc_lower for rk in relocation_keywords) and not is_spb_reloc:
+            # Если это не 100% чистая удаленка, а работа на месте в другом регионе
+            if not ("удаленная работа" in emp_lower or "дистанционная работа" in emp_lower):
+                return False, "Вакансия с переездом / релокацией в другой регион"
+
+        is_spb = any(c in f"{address_lower} {emp_lower} {desc_lower[:500]}" for c in ["санкт-петербург", "питер", "спб", "петербург"])
+        is_remote = any(r in f"{emp_lower} {desc_lower[:1000]}" for r in ["удален", "дистанцион", "remote"])
 
         if is_spb and is_remote:
             return True, "📍 Санкт-Петербург (Удалённо / Гибрид)"
