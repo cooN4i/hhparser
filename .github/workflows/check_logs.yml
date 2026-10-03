@@ -17,5 +17,21 @@ jobs:
           script: |
             echo "=== DOCKER CONTAINERS ==="
             docker ps
+            echo "=== DATABASE STATS ==="
+            docker exec hhparser_bot python -c "
+import sqlite3
+try:
+    conn = sqlite3.connect('data/vacancies.db')
+    cur = conn.cursor()
+    cur.execute('SELECT status, count(*) FROM processed_vacancies GROUP BY status')
+    print('Статусы processed_vacancies:', cur.fetchall())
+    cur.execute('SELECT count(*) FROM vacancies')
+    print('Всего одобрено и сохранено в vacancies:', cur.fetchone()[0])
+    cur.execute('SELECT id, title, company, match_score, created_at FROM vacancies ORDER BY created_at DESC LIMIT 5')
+    for row in cur.fetchall():
+        print(f'  • {row[0]}: {row[1]} ({row[2]}) — score {row[3]}% [{row[4]}]')
+except Exception as e:
+    print('Ошибка чтения БД:', e)
+" || true
             echo "=== CONTAINER LOGS ==="
             docker logs --tail 150 hhparser_bot
