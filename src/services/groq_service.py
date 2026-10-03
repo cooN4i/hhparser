@@ -224,8 +224,12 @@ class GroqService:
                 "published_at": item.get("published_at")
             }
 
+            status_sym = "✅" if is_suitable else "❌"
+            vac_url = item.get("url") or f"https://hh.ru/vacancy/{item.get('id')}"
             logger.info(
-                f"Groq оценка [{item.get('id')} - {item.get('title')}]: "
-                f"suitable={is_suitable}, score={match_score}%, reason='{reason[:80]}...'"
+                f"{status_sym} Groq AI вердикт [{item.get('id')}] '{item.get('title')}': "
+                f"suitable={is_suitable}, score={match_score}%\n"
+                f"   URL: {vac_url}\n"
+                f"   Причина AI: {reason}"
             )
             return is_suitable, enriched

@@ -317,6 +317,10 @@ class HHClient:
                 f"Найдено {len(raw_cards_by_id)} карточек на поиске, "
                 f"новых кандидатов для детального анализа: {len(candidate_cards)}"
             )
+            if candidate_cards:
+                logger.info(f"🔎 Новые найденные вакансии на HH ({len(candidate_cards)}):")
+                for c in candidate_cards[:max_details]:
+                    logger.info(f"   • [{c['id']}] {c['title']} ({c.get('company', 'Компания не указана')}) — {c['url']}")
 
             # Fetch details for candidate vacancies in order of newest first
             detailed_vacancies = []

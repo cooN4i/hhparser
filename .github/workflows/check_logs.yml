@@ -15,12 +15,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
           script: |
-            echo "=== NGINX PORTS & LISTENING SOCKETS ==="
-            echo "${{ secrets.SERVER_PASSWORD }}" | sudo -S ss -tulpn 2>/dev/null | grep -E "nginx|:[0-9]+" || ss -tulpn
-
-            echo "=== NGINX SITES DIRECTORY LISTING ==="
-            ls -la /etc/nginx/sites-enabled/ 2>/dev/null || true
-            ls -la /etc/nginx/conf.d/ 2>/dev/null || true
-
-            echo "=== FULL NGINX CONFIGURATION (nginx -T) ==="
-            echo "${{ secrets.SERVER_PASSWORD }}" | sudo -S nginx -T 2>/dev/null || nginx -T 2>/dev/null || cat /etc/nginx/nginx.conf
+            echo "=== DOCKER CONTAINERS ==="
+            docker ps
+            echo "=== CONTAINER LOGS ==="
+            docker logs --tail 150 hhparser_bot

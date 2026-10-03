@@ -19,4 +19,5 @@ Thumbs.db
 scratch/
 *.log
 server_logs_output.txt
+server_nginx_output.txt
 

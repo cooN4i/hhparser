@@ -121,22 +121,43 @@ class JobMonitor:
                 sent_count = 0
                 for item in fresh_candidates:
                     vid = str(item["id"])
+                    v_title = item.get("title", "Без названия")
+                    v_url = item.get("url", f"https://hh.ru/vacancy/{vid}")
+                    v_comp = item.get("company", "Не указана")
+                    v_sal = item.get("salary_raw") or "не указана"
+
                     # Быстрый локальный пре-фильтр локации и зарплаты
-                    loc_ok, _ = self.filter_service.check_location(
+                    loc_ok, loc_reason = self.filter_service.check_location(
                         item.get("address", ""), item.get("employment_text", ""), item.get("description_html", "")
                     )
-                    sal_ok, _, _, _, _ = self.filter_service.parse_and_check_salary(item.get("salary_raw"))
+                    sal_ok, _, _, _, sal_str = self.filter_service.parse_and_check_salary(item.get("salary_raw"))
                     if not (loc_ok and sal_ok):
+                        reasons = []
+                        if not loc_ok:
+                            reasons.append(f"локация ({loc_reason})")
+                        if not sal_ok:
+                            reasons.append(f"зарплата ({sal_str} < {settings.MIN_SALARY_RUB} ₽)")
+                        logger.info(
+                            f"Первый запуск: ⏭ пре-фильтр отклонил [{vid}] '{v_title}' ({v_comp})\n"
+                            f"   Ссылка: {v_url}\n"
+                            f"   Причина отсева: {', '.join(reasons)}"
+                        )
                         continue
 
+                    logger.info(
+                        f"Первый запуск: 🤖 отправляю на анализ в Groq AI [{vid}] '{v_title}' ({v_comp})\n"
+                        f"   Ссылка: {v_url} | Зарплата: {v_sal}"
+                    )
                     # Оценка через Groq AI
                     is_suitable, enriched = await self.groq_service.evaluate_vacancy(item)
                     await asyncio.sleep(1.5)
 
                     if is_suitable:
                         logger.info(
-                            f"Первый запуск: отправляю свежую вакансию ID {enriched['id']} "
-                            f"('{enriched['title']}', {enriched.get('published_at')})"
+                            f"Первый запуск: ✅ ПОДХОДИТ [{vid}] '{v_title}' (Оценка: {enriched.get('match_score', 0)}%)\n"
+                            f"   Ссылка: {v_url}\n"
+                            f"   Ответ AI: {enriched.get('ai_reason', '')}\n"
+                            f"   Навыки: {', '.join(enriched.get('matched_skills', []))}"
                         )
                         success = await self.notification_service.send_vacancy_notification(enriched)
                         async with async_session_factory() as session:
@@ -146,6 +167,12 @@ class JobMonitor:
                         if success:
                             sent_count += 1
                         break  # При первом запуске отправляем только 1 самую свежую
+                    elif enriched:
+                        logger.info(
+                            f"Первый запуск: ❌ НЕ ПОДХОДИТ [{vid}] '{v_title}' (Оценка: {enriched.get('match_score', 0)}%)\n"
+                            f"   Ссылка: {v_url}\n"
+                            f"   Причина отказа AI: {enriched.get('ai_reason', '')}"
+                        )
 
                 if sent_count == 0:
                     logger.info("Первый запуск: подходящих вакансий за последние 3 часа нет. Baseline зафиксирован.")
@@ -157,25 +184,43 @@ class JobMonitor:
                 logger.info("Новых объявлений на HH не обнаружено. Ожидание следующего цикла.")
                 return 0
 
-            logger.info(f"Найдено {len(detailed_items)} новых объявлений на HH. Анализирую через Groq AI...")
+            logger.info(f"Найдено {len(detailed_items)} новых объявлений на HH. Начинаю обработку...")
             sent_count = 0
 
             for item in detailed_items:
                 vid = str(item["id"])
+                v_title = item.get("title", "Без названия")
+                v_url = item.get("url", f"https://hh.ru/vacancy/{vid}")
+                v_comp = item.get("company", "Не указана")
+                v_sal = item.get("salary_raw") or "не указана"
 
                 # Шаг 1: Быстрый локальный пре-чек локации и минимальной зарплаты
                 # (сберегает вызовы Groq от очевидных офисов в других городах или вакансий < 60к)
-                loc_ok, _ = self.filter_service.check_location(
+                loc_ok, loc_reason = self.filter_service.check_location(
                     item.get("address", ""), item.get("employment_text", ""), item.get("description_html", "")
                 )
-                sal_ok, _, _, _, _ = self.filter_service.parse_and_check_salary(item.get("salary_raw"))
+                sal_ok, _, _, _, sal_str = self.filter_service.parse_and_check_salary(item.get("salary_raw"))
 
                 if not (loc_ok and sal_ok):
-                    logger.debug(f"Вакансия {vid} отсеяна пре-фильтром локации/зарплаты.")
+                    reasons = []
+                    if not loc_ok:
+                        reasons.append(f"локация ({loc_reason})")
+                    if not sal_ok:
+                        reasons.append(f"зарплата ({sal_str} < {settings.MIN_SALARY_RUB} ₽)")
+                    logger.info(
+                        f"⏭ Пре-фильтр отклонил [{vid}] '{v_title}' ({v_comp})\n"
+                        f"   Ссылка: {v_url}\n"
+                        f"   Причина отсева: {', '.join(reasons)}"
+                    )
                     async with async_session_factory() as session:
                         async with session.begin():
                             await session.merge(ProcessedVacancy(id=vid, status="rejected"))
                     continue
+
+                logger.info(
+                    f"🤖 Отправляю на анализ в Groq AI [{vid}] '{v_title}' ({v_comp})\n"
+                    f"   Ссылка: {v_url} | Зарплата: {v_sal}"
+                )
 
                 # Шаг 2: Семантическая оценка через Groq AI
                 is_suitable, enriched = await self.groq_service.evaluate_vacancy(item)
@@ -184,8 +229,11 @@ class JobMonitor:
                 if is_suitable:
                     pub_time = enriched.get("published_at")
                     logger.info(
-                        f"Найдена подходящая вакансия ID {enriched['id']} "
-                        f"('{enriched['title']}', {pub_time}). Отправляю уведомление пользователю..."
+                        f"✅ ПОДХОДИТ [{vid}] '{v_title}' (Оценка: {enriched.get('match_score', 0)}%)\n"
+                        f"   Ссылка: {v_url}\n"
+                        f"   Ответ AI: {enriched.get('ai_reason', '')}\n"
+                        f"   Навыки: {', '.join(enriched.get('matched_skills', []))}\n"
+                        f"   Отправляю уведомление пользователю..."
                     )
                     success = await self.notification_service.send_vacancy_notification(enriched)
                     async with async_session_factory() as session:
@@ -197,12 +245,18 @@ class JobMonitor:
                     # Пауза между отправками нескольких сообщений в Telegram
                     await asyncio.sleep(1.5)
                 elif enriched:
+                    logger.info(
+                        f"❌ НЕ ПОДХОДИТ [{vid}] '{v_title}' (Оценка: {enriched.get('match_score', 0)}%)\n"
+                        f"   Ссылка: {v_url}\n"
+                        f"   Причина отказа AI: {enriched.get('ai_reason', '')}"
+                    )
                     async with async_session_factory() as session:
                         async with session.begin():
                             await session.merge(ProcessedVacancy(id=vid, status="rejected"))
                 else:
-                    # В случае редкой невосстановимой ошибки Groq помечаем failed_skip,
-                    # чтобы вакансия не блокировала очередь
+                    logger.warning(
+                        f"⚠️ Не удалось получить оценку Groq AI для [{vid}] '{v_title}' ({v_url})."
+                    )
                     async with async_session_factory() as session:
                         async with session.begin():
                             await session.merge(ProcessedVacancy(id=vid, status="failed_skip"))

@@ -70,8 +70,8 @@ class FilterService:
             if not ("удаленная работа" in emp_lower or "дистанционная работа" in emp_lower):
                 return False, "Вакансия с переездом / релокацией в другой регион"
 
-        is_spb = any(c in f"{address_lower} {emp_lower} {desc_lower[:500]}" for c in ["санкт-петербург", "питер", "спб", "петербург"])
-        is_remote = any(r in f"{emp_lower} {desc_lower[:1000]}" for r in ["удален", "дистанцион", "remote"])
+        is_spb = any(c in f"{address_lower} {emp_lower} {desc_lower}" for c in ["санкт-петербург", "питер", "спб", "петербург"])
+        is_remote = any(r in f"{emp_lower} {desc_lower}" for r in ["удален", "дистанцион", "remote"])
 
         if is_spb and is_remote:
             return True, "📍 Санкт-Петербург (Удалённо / Гибрид)"
